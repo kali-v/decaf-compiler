@@ -4,24 +4,22 @@ YACC=bison
 YFLAGS=--report=state -W -d
 LEX=flex++
 LFLAGS=--warn
-SRC=utils.cpp LLVMIRGenerator.cpp SymbolTable.cpp node.cpp decaf.cpp decaf.tab.cpp decaf_lex.cpp
-HDRS=decaf.tab.hpp node.hpp
+SRC=src/utils.cpp src/LLVMIRGenerator.cpp src/SymbolTable.cpp src/node.cpp src/decaf.cpp src/decaf.tab.cpp src/decaf_lex.cpp
+HDRS=src/decaf.tab.hpp src/node.hpp
 
 .PHONY: clean
 
 decaf: $(SRC) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(SRC) -o decaf
 
-decaf.tab.cpp : decaf.ypp node.hpp
-	$(YACC) $(YFLAGS) decaf.ypp
+src/decaf.tab.cpp : src/decaf.ypp src/node.hpp
+	$(YACC) $(YFLAGS) src/decaf.ypp
 
-decaf_lex.cpp: decaf.lpp node.hpp
-	$(LEX) $(LFLAGS) decaf.lpp
+src/decaf_lex.cpp: src/decaf.lpp src/node.hpp
+	$(LEX) $(LFLAGS) src/decaf.lpp
 
 tidy:
-	/bin/rm -f a.out core.* decaf.tab.* decaf.output decaf_lex.cpp
+	/bin/rm -f a.out core.* src/decaf.tab.* decaf.output src/decaf_lex.cpp
 
 clean: tidy
-	/bin/rm -f decaf 
-
-
+	/bin/rm -f decaf
