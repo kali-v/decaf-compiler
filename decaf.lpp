@@ -1,0 +1,192 @@
+%{
+using std::string;
+
+#include <iostream>
+#include <string>
+#include "node.hpp"
+#include "decaf.hpp"
+#include "decaf.tab.hpp"
+
+int returnToken(int yylineno, int leng, string text, int rtn) {
+    // set state of parser like line and column number
+
+    value = text;
+    lineno = yylineno;
+    matchLen = leng;
+    colno += leng;
+
+    return rtn;
+}
+
+string serr; // first char of error
+
+string linetext; // line content for error msg
+bool delLine = false; // if set linetext will be removed
+
+// storing content of the current line
+// if encounter newline delete content in the next iteration
+#define YY_INPUT(buf, result, max_size) { \
+    int c = getchar(); \
+    if (delLine) { linetext = ""; delLine = false; } \
+    if (c == '\n') delLine = true; \
+    else linetext += c; \
+    result = (c == EOF) ? YY_NULL : (buf[0] = c, 1); \
+}
+
+// store last and first column in case of error
+#define YY_USER_ACTION yylloc.first_line = yylloc.last_line = yylineno; \
+                       yylloc.first_column = colno; \
+                       yylloc.last_column = colno + yyleng;
+%}
+
+
+%option outfile="decaf_lex.cpp"
+%option noyywrap
+%option yylineno
+
+%x IN_C_COMMENT
+%x IN_CPP_COMMENT
+%x ERROR
+%x WERROR
+
+SPACE [ \t]
+NUMB [0-9]+
+IDENT [\_|a-zA-Z][\_a-zA-Z0-9]*
+OPERATOR \[|\]|\{|\}|!=|==|<|>|<=|>=|&&|\|\||!|\+|\-|\*|\/|\%|\;|\,|\(|\)|=|\.
+NOPERATORS [^\[^\]^\{^\}^\(!=)^\(==)^\<^\>^\(<=)^\(>=)^\(&&)^\(||)^\!^\+^\-^\*^\/^\%^\;^\,^\(^\)^\=^\.^\n^\t^\ ]
+%%
+
+<INITIAL>{
+    "/*" colno += yyleng; BEGIN(IN_C_COMMENT);
+    "//" colno += yyleng; BEGIN(IN_CPP_COMMENT);
+}
+<IN_C_COMMENT>{
+    "*/"      colno += yyleng; BEGIN(INITIAL);
+    [^*\n]+   colno += yyleng;
+    "*"       colno += yyleng;
+    \n        colno = 1;
+}
+<IN_CPP_COMMENT>{
+    [^\n]+ colno += yyleng;
+    \n colno = 1; BEGIN(INITIAL);
+}
+
+"=" { return returnToken(yylineno, yyleng, "", ASSIGN); }
+"," { return returnToken(yylineno, yyleng, "", COMMA); }
+
+"+" { return returnToken(yylineno, yyleng, "", PLUS); }
+"-" { return returnToken(yylineno, yyleng, "", MINUS); }
+"*" { return returnToken(yylineno, yyleng, "", TIMES); }
+"/" { return returnToken(yylineno, yyleng, "", DIV); }
+
+"%" { return returnToken(yylineno, yyleng, "", MOD); }
+
+"&&" { return returnToken(yylineno, yyleng, "", AND); }
+"||" { return returnToken(yylineno, yyleng, "", OR); }
+
+"!" { return returnToken(yylineno, yyleng, "", NOT); }
+
+"!=" { return returnToken(yylineno, yyleng, "", NE); }
+"==" { return returnToken(yylineno, yyleng, "", EQ); }
+"<" { return returnToken(yylineno, yyleng, "", LT); }
+">" { return returnToken(yylineno, yyleng, "", GT); }
+"<=" { return returnToken(yylineno, yyleng, "", LE); }
+">=" { return returnToken(yylineno, yyleng, "", GE); }
+
+";" { return returnToken(yylineno, yyleng, "", SEMI); }
+"[" { return returnToken(yylineno, yyleng, "", LBRACK); }
+"]" { return returnToken(yylineno, yyleng, "", RBRACK); }
+"." { return returnToken(yylineno, yyleng, "", DOT); }
+"(" { return returnToken(yylineno, yyleng, "", LPAREN); }
+")" { return returnToken(yylineno, yyleng, "", RPAREN); }
+"{" { return returnToken(yylineno, yyleng, "", LBRACE); }
+"}" { return returnToken(yylineno, yyleng, "", RBRACE); }
+
+
+class { return returnToken(yylineno, yyleng, "", CLASS); }
+void { return returnToken(yylineno, yyleng, "", VOID); }
+while { return returnToken(yylineno, yyleng, "", WHILE); }
+return { return returnToken(yylineno, yyleng, "", RETURN); } 
+print { return returnToken(yylineno, yyleng, "", PRINT); }
+int { return returnToken(yylineno, yyleng, "", INT); }
+this { return returnToken(yylineno, yyleng, "", THIS); }
+null { return returnToken(yylineno, yyleng, "", NULLT); }
+read { return returnToken(yylineno, yyleng, "", READ); }
+new  { return returnToken(yylineno, yyleng, "", NEW); }
+if { return returnToken(yylineno, yyleng, "", IF); }
+else { return returnToken(yylineno, yyleng, "", ELSE); }
+
+{IDENT} {
+    yylval.ttype = new Node();
+    yylval.ttype->setsvalue(yytext);
+
+	return returnToken(yylineno, yyleng, yytext, ID);
+}
+{SPACE}+ {
+    if (yytext[0] == '\t') {
+        colno += (8 - (colno % 8)) + 1;
+    } else {
+        colno++;
+    }
+}
+{NUMB}	{
+    yylval.ttype = new Node();
+    yylval.ttype->setivalue(atoi(yytext));
+
+	return returnToken(yylineno, yyleng, yytext, NUMBER);
+}
+[\n] {
+    colno = 1;
+}
+. {
+    BEGIN(ERROR);
+    serr = yytext;
+}
+<ERROR>{OPERATOR} {
+     BEGIN(INITIAL);
+     yyless(0);
+     int errlen = yyleng + serr.size();
+               
+     std::cout << "Lexical Character Error: " << serr + yytext <<
+             " on line: " << yylineno <<
+             " column number: " << colno << std::endl;
+     colno += errlen;
+}
+<ERROR>[\ |\t|\n] {
+     BEGIN(INITIAL);
+     yyless(0);
+     int errlen = yyleng + serr.size();
+          
+     std::cout << "Lexical Character Error: " << serr + yytext <<
+             " on line: " << yylineno <<
+             " column number: " << colno << std::endl;
+     colno += errlen;
+}
+<ERROR>. {
+    BEGIN(WERROR);
+    serr += yytext;
+}
+<WERROR>{NOPERATORS} {
+     serr += yytext;
+}
+<WERROR>[\ |\t|\n] {
+     BEGIN(INITIAL);
+     yyless(0);
+     int errlen = yyleng + serr.size();
+     
+     std::cout << "Lexical Word Error: " << serr + yytext <<
+             " on line: " << yylineno <<
+             " column number: " << colno << std::endl;
+     colno += errlen;
+}
+<WERROR>{OPERATOR} {
+     BEGIN(INITIAL);
+     yyless(0);
+     int errlen = yyleng + serr.size();
+     
+     std::cout << "Lexical Word Error: " << serr + yytext <<
+             " on line: " << yylineno <<
+             " column number: " << colno << std::endl;
+     colno += errlen;
+}
+%%

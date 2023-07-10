@@ -1,0 +1,14 @@
+*.ll
+*.o
+*.output
+*.out
+
+core.*
+decaf.tab.*
+
+decaf_lex.cpp
+decaf
+
+tests
+
+.vscode/

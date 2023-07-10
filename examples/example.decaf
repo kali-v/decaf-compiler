@@ -1,0 +1,27 @@
+class Main {
+	int a;
+	int b;
+	int c;
+	
+	void foo() {
+		int b;
+		b = 4;
+		a = b + 1;
+	}
+
+	int bar() {
+		int a;
+		a = 12 || 50 % 32;
+		return 2 + a;
+	}
+
+	void main() {
+		foo();
+		print(a);
+
+		c = bar() - 1;
+		print(c);
+		print(a + 1);
+	}
+}
+

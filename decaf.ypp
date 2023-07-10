@@ -1,0 +1,904 @@
+%define parse.error verbose
+ 
+%{
+#include <iostream>
+#include <FlexLexer.h>
+
+#include "node.hpp"
+#include "SymbolTable.hpp"
+#include "utils.hpp"
+
+extern Node *tree;
+extern SymbolTable *currentST;
+extern yyFlexLexer scanner;
+extern int yylineno;
+extern std::string linetext;
+
+#define yylex() scanner.yylex()
+
+void yyerror(const char *);
+
+int nomains = 0;
+
+void checkSameOperands(Node* a, Node* b) {
+    std::string aprod = getRightSideOfProd(a->production);
+    std::string bprod = getRightSideOfProd(b->production);
+    
+    std::string atype = getType(a, currentST);
+    std::string btype = getType(b, currentST);
+
+    if((aprod == "null" && btype != "int") ||
+        (bprod == "null" && atype != "int")) {
+        return;
+    }
+
+    if (atype == "this") {
+        atype = parseThis(currentST);
+    }
+    if (btype == "this") {
+        btype = parseThis(currentST);        
+    }
+
+    if (atype.size() == 0 || btype.size() == 0 || atype != btype) {
+        std::cout << atype << std::endl;
+        std::cout << btype << std::endl;
+        yyerror("operands are not the same type");
+    }
+}
+
+void checkIntOperands(Node* a, Node* b) {
+    std::string aprod = getRightSideOfProd(a->production);
+    std::string bprod = getRightSideOfProd(b->production);
+    
+    if(strContains(aprod, "name")) {
+        if(getNameType(a->children[0], currentST) != "int") {
+            yyerror("lvalue is not an int");
+        }
+    } else if (endsWith(aprod, "ID")) {
+        if(getNameType(*a, currentST) != "int") {
+            yyerror("lvalue is not an int");
+        }
+    }
+
+    if(strContains(bprod, "name")) {
+        if(getNameType(b->children[0], currentST) != "int") {
+            yyerror("rvalue is not an int");
+        }
+    } else if (endsWith(bprod, "ID")) {
+        if(getNameType(*b, currentST) != "int") {
+            yyerror("rvalue is not an int");
+        }
+    }
+}
+
+
+void checkIntArgList(Node* arglist) {
+    std::vector<Node> res;
+    res.reserve(100);
+    std::vector<Node> params = getArgListParams(arglist, res, currentST);
+    for (Node param : params) {
+        if (getType(&param, currentST) != "int") {
+            yyerror("print takes only integers as arguments");
+        }
+    }
+}
+
+%}
+
+%locations
+%union {
+  Node *ttype;
+}
+
+%type<ttype> Program ClassDeclaration ClassBody VarDeclaration
+%type<ttype> ConstructorDeclaration MethodDeclaration SimpleType Type
+%type<ttype> ParameterList NParameter Parameter Block Expression
+%type<ttype> LocalVarDeclaration Statement Name ArgList
+%type<ttype> StatementNSemi NArg NewBracks NewExpression NewExpressions
+%type<ttype> NIfStatement ClosedCStatement OpenCStatement Multibrackets
+%type<ttype> BracketExps InnerBlock
+
+
+%token NL NEW CLASS VOID INT SEMI THIS DOT NULLT READ LPAREN RPAREN ASSIGN
+%token LBRACK RBRACK LBRACE RBRACE COMMA WHILE RETURN PRINT IF ELSE
+
+%token<ttype> NUMBER ID
+
+%left OR
+%left AND
+%left EQ NE
+%left GE LE GT LT
+%left PLUS MINUS
+%left TIMES DIV MOD
+
+%precedence NOT
+
+%%
+Program: ClassDeclaration {
+    $$ = new Node(currentST);
+    $$->production = "<program> --> <classdec>";
+    $$->addChild($1);
+    tree->addChild($$);
+}
+| Program ClassDeclaration {
+    $$ = new Node(currentST);
+    $$->production = "<program> --> <program> <classdec>";
+    if (containsEmptyProd($1)) {
+        // program is empty so far - start over
+        $$->production = "<program> --> <classdec>";
+        tree->resetChildren();
+    }
+    $$->addChild($2);
+    tree->addChild($$);
+}
+;
+
+ClassDeclaration: CLASS ID {
+    currentST->insert(new STObject("<class_type>", $2->getsvalue()));
+} ClassBody {
+    $$ = new Node(currentST);
+    $$->production = "<classdec> --> CLASS ID <classbody>";
+    
+    $2->production = "ID --> "+ $2->getsvalue();
+
+    $$->addChild($2);
+    $$->addChild($4);
+}
+;
+
+
+ClassBody: LBRACE { 
+    currentST = currentST->addScope();
+} VarDeclaration { 
+    $$ = new Node(currentST);
+    $$->production = "<classbody> --> { ";
+
+    if(hasStrLastChild($3, "vardec")) {
+        $$->production += " <vardecs> ";
+    }
+    if(hasStrLastChild($3, "constdec")) {
+        $$->production += " <constdecs> ";
+    }
+    if(hasStrLastChild($3, "methdec")) {
+        $$->production += " <methdecs> ";
+    }
+    $$->production += " }";
+    
+    $$->addChild($3);
+
+    currentST = currentST->parent;
+};
+
+VarDeclaration: Type ID SEMI {
+    $2->production = "ID --> "+ $2->getsvalue();
+
+    STObject* sto = new STObject(
+        parseType($1) + sanitizeProd($1->production),
+        $2->getsvalue()
+    );
+    currentST->insert(sto);
+} VarDeclaration {
+    $$ = new Node(currentST);
+
+    Node *s1 = new Node(currentST);
+    s1->production = "<vardec> --> <type> ID <vardec>";
+    s1->addChild($1);
+    s1->addChild($2);
+
+    $$->addChild(s1);
+    $$->addChild($5);
+}
+| error SEMI VarDeclaration {
+    $$ = $3;
+}
+| ConstructorDeclaration {
+    $$ = $1;
+};
+
+ConstructorDeclaration: ID LPAREN ParameterList RPAREN {
+    FunctionSTObject* sto = createFunctionSTObject($3, "<const_type>", $1->getsvalue(), $1->getsvalue());    
+    currentST->insert(sto);
+} Block ConstructorDeclaration {
+    FunctionSTObject* sto = createFunctionSTObject($3, "<const_type>", $1->getsvalue(), $1->getsvalue());    
+    handleFuncParams(sto, currentST);
+
+    $$ = new Node(currentST);
+    Node *s1 = new Node(currentST);
+    s1->production = "<constdec> --> ID ( ";
+    if (std::string($3->production).find("paramlist") != std::string::npos) {
+        s1->production += "<paramlist>";
+    }
+    s1->production += " ) <block>";
+
+    $1->production = "ID --> "+ $1->getsvalue();
+    s1->addChild($1);
+    s1->addChild($3);
+    s1->addChild($6);
+    $$->addChild(s1);
+    $$->addChild($7);
+}
+| error RBRACE ConstructorDeclaration {
+    $$ = $3;
+}
+| MethodDeclaration {
+    $$ = $1;
+};
+
+MethodDeclaration: Type ID LPAREN ParameterList RPAREN {
+    FunctionSTObject* sto = createFunctionSTObject($4, "<func_type>", $2->getsvalue(), parseType($1));
+    currentST->insert(sto);
+
+    if ($2->getsvalue() == "main") {
+        yyerror("main function must have return type void");
+        nomains ++;
+        if(nomains >= 2) {
+            yyerror("program must contains only one main function");
+        }
+        if (sto->params.size() > 0) {
+            yyerror("main takes no params");
+        }
+    }
+} Block MethodDeclaration {
+    FunctionSTObject* sto = createFunctionSTObject($4, "<func_type>", $2->getsvalue(), parseType($1));
+    handleFuncParams(sto, currentST);
+
+    $$ = new Node(currentST);
+    
+    Node *n1 = new Node(currentST);
+    n1->addChild($1);
+    $2->production = "ID --> "+ $2->getsvalue();
+    n1->addChild($2);
+    n1->production = "<methdec> --> <type> ID ( ";
+    
+    if ($4->children.size() > 0) {
+        n1->production += " <paramlist> ";
+        n1->addChild($4);
+    }
+
+    n1->production += " ) <block>";
+    n1->addChild($7);
+
+    if ($8->children.size() > 0) {
+        std::string ls = $8->children[$8->children.size() - 1].production;
+        std::string pr = $8->production;
+        if (std::string(ls).find("methdec") != std::string::npos) {
+            n1->production += " <methdec>";
+        } else if (std::string(pr).find("methdec") != std::string::npos) {
+            n1->production += " <methdec>";
+        }
+    }
+    
+    n1->addChild($8);
+    $$->addChild(n1);
+}
+| VOID ID LPAREN ParameterList RPAREN {
+    FunctionSTObject* sto = createFunctionSTObject($4, "<func_type>", $2->getsvalue(), "void");
+    currentST->insert(sto);
+
+    if ($2->getsvalue() == "main") {
+        nomains ++;
+        if(nomains >= 2) {
+            yyerror("program must contains only one main function");
+        }
+        if (sto->params.size() > 0) {
+            yyerror("main takes no params");
+        }
+    }
+
+} Block MethodDeclaration {
+    FunctionSTObject* sto = createFunctionSTObject($4, "<func_type>", $2->getsvalue(), "void");
+    handleFuncParams(sto, currentST);
+
+    $$ = new Node(currentST);
+    $$->production = "<methdec> --> void ID ( <paramlist> ) <block>";
+
+    $2->production = "ID --> "+ $2->getsvalue();
+    $$->addChild($2);
+    $$->addChild($4);
+    $$->addChild($7);
+    
+    if ($8->children.size() > 0) {
+        std::string ls = $8->children[$8->children.size() - 1].production;
+        std::string pr = $8->production;
+        if (std::string(ls).find("methdec") != std::string::npos) {
+            $$->production += " <methdec>";
+        } else if (std::string(pr).find("methdec") != std::string::npos) {
+            $$->production += " <methdec>";
+        }
+    }
+
+    $$->addChild($8);
+}
+| VOID error RBRACE MethodDeclaration {
+    $$ = $4;
+}
+| Type error RBRACE MethodDeclaration {
+    $$ = $4;
+}
+| RBRACE {
+    $$ = new Node(currentST);
+};
+
+Type: SimpleType {
+    $$ = new Node(currentST);
+    $$->production = "<type> --> <simpletype>";
+    $$->addChild($1);
+}
+| Type LBRACK RBRACK {
+    $$ = $1;
+    Node* s1 = new Node(currentST);
+    s1->production = "<type> --> <type> [ ]";
+    $$->addChild(s1);
+};
+
+SimpleType: INT {
+    $$ = new Node(currentST);
+    $$->production = "<simpletype> --> int";
+}
+| ID { 
+    $$ = new Node(currentST);
+    $$->production = "<simpletype> --> ";
+    $$->production += $1->getsvalue();
+};
+
+ParameterList: Parameter NParameter { 
+    $$ = new Node(currentST);
+    $$->production = "<paramlist> --> <params>";
+    $1->addChild($2);
+    $$->addChild($1);
+}
+| %empty {
+    $$ = new Node(currentST);
+};
+
+NParameter: NParameter COMMA Type ID {
+    $$ = new Node(currentST);
+    $$->production = "<param> --> <type> ID";
+    $$->addChild($3);
+    $4->production = "ID --> "+ $4->getsvalue();
+    $$->addChild($4);
+    $$->addChild($1);
+}
+| %empty { $$ = new Node(currentST); };
+
+Parameter: Type ID {
+    $$ = new Node(currentST);
+    $$->production = "<param> --> <type> ID";
+    $$->addChild($1);
+
+    $2->production = "ID --> "+ $2->getsvalue();
+    $$->addChild($2);
+};
+
+Block: InnerBlock { $$ = $1; }
+| %empty { $$ = new Node(currentST); };
+
+
+InnerBlock: LBRACE {
+    currentST = currentST->addScope(); 
+} LocalVarDeclaration RBRACE {
+    $$ = new Node(currentST);
+
+    $$->production = "<block> --> { ";
+    if(hasStrLastChild($3, "localvardec")) {
+        $$->production += " <localvardecs> ";
+    }
+    if(hasStrLastChild($3, "statement")) {
+        $$->production += " <statements> ";
+    }
+    $$->production += " }";
+    $$->addChild($3);
+
+    currentST = currentST->parent;
+};
+
+LocalVarDeclaration: INT Multibrackets ID SEMI {
+    std::string stname = "int";
+    if (std::string($2->production).find("[]") != std::string::npos) {
+        stname += sanitizeProd($2->production);
+    }
+    currentST->insert(new STObject(stname, $3->getsvalue()));
+} LocalVarDeclaration {
+    $$ = new Node(currentST);
+
+    Node *n1 = new Node(currentST);
+    std::string stname = "int";
+    if (std::string($2->production).find("[]") != std::string::npos) {
+        n1->production = "<localvardec> --> INT <multibrackets> ID";
+        n1->addChild($2);
+        stname += sanitizeProd($2->production);
+    } else {
+        n1->production = "<localvardec> --> INT ID";
+    }
+    $3->production = "ID --> "+ $3->getsvalue();
+    n1->addChild($3);
+
+    $$->addChild(n1);
+    $$->addChild($6);
+}
+| ID Multibrackets ID SEMI {
+    STObject* sto = new STObject(
+        sanitizeProd($1->production + $2->production),
+        $3->getsvalue()
+    );
+    currentST->insert(sto);
+} LocalVarDeclaration {
+    $$ = new Node(currentST);
+
+    Node *n1 = new Node(currentST);
+    $1->production = "ID --> "+ $1->getsvalue();
+    n1->addChild($1);
+
+    if (std::string($2->production).find("[]") != std::string::npos) {
+        n1->production = "<localvardec> --> ID <multibrackets> ID";
+        n1->addChild($2);
+    } else {
+        n1->production = "<localvardec> --> ID ID";
+    }
+
+    $3->production = "ID --> "+ $3->getsvalue();
+    n1->addChild($3);
+
+    $$->addChild(n1);
+    $$->addChild($6);
+}
+| Statement {
+    $$ = $1;
+};
+
+Multibrackets: LBRACK RBRACK Multibrackets {
+    $$ = new Node(currentST);
+    $$->production = $3->production + "[]";
+}
+| %empty {
+    $$ = new Node(currentST);
+    $$->production = "<multibrackets> --> ";
+};
+
+
+OpenCStatement: IF LPAREN Expression RPAREN Statement {
+    $$ = new Node(currentST);
+    $$->production = "<condstatement> --> if ( <exp> ) <statement>";
+    $$->addChild($3);
+    $$->addChild($5);
+
+    if (currentST->objects.size() > 0) {
+        currentST->objects[currentST->objects.size() - 1]->name = "if";
+    }
+}
+| IF LPAREN Expression RPAREN ClosedCStatement ELSE OpenCStatement {
+    $$ = new Node(currentST);
+    $$->production = "<condstatement> --> if ( <exp> ) <statement> ELSE <statement>";
+    $$->addChild($3);
+    $$->addChild($5);
+    $$->addChild($7);
+    
+    if (currentST->objects.size() > 2) {
+        currentST->objects[currentST->objects.size() - 1]->name = "if";
+        currentST->objects[currentST->objects.size() - 2]->name = "else";
+    }
+};
+
+ClosedCStatement: NIfStatement { } 
+| IF LPAREN Expression RPAREN ClosedCStatement ELSE ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->production = "<condstatement> --> if ( <exp> ) <statement>";
+    $$->addChild($3);
+    $$->addChild($5);
+    $$->addChild($7);
+
+    if (currentST->objects.size() > 2) {
+        currentST->objects[currentST->objects.size() - 1]->name = "if";
+        currentST->objects[currentST->objects.size() - 2]->name = "else";
+    }
+}
+| LBRACE {
+    currentST->insert(new STObject("<block_type>", "block"));
+    currentST = currentST->addScope();
+} LocalVarDeclaration RBRACE {
+    currentST = currentST->parent;
+} ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> <block>";
+    $$->addChild($3);
+    $$->addChild($6);
+};
+
+
+Statement: OpenCStatement {
+    $$ = new Node(currentST);
+    $$->addChild($1);
+}
+| ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->addChild($1);
+}
+| error SEMI Statement {
+    $$ = $3;
+}
+;
+
+NIfStatement: StatementNSemi SEMI ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| SEMI ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->addChild($2);
+}
+| RETURN SEMI ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> return";
+
+    if(getCurrentReturnType(currentST) != "void" && getCurrentReturnType(currentST) != "") {
+        yyerror("Wrong return type");
+    }
+    $$->addChild($3);
+}
+| WHILE LPAREN Expression RPAREN ClosedCStatement {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> while ( <exp> ) <statements>";
+    $$->addChild($3);
+    $$->addChild($5);
+}
+| %empty {
+    $$ = new Node(currentST);
+}
+;
+
+StatementNSemi: Name ASSIGN Expression {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> <name> = <exp>";
+    checkSameOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Name LPAREN ArgList RPAREN {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> <name> ( ";
+    if($3->production.find("arglist") != std::string::npos) {
+        $$->production += " <arglist> ";
+    }
+    $$->production += " )";
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| PRINT LPAREN ArgList RPAREN {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> print ( ";
+    if($3->production.find("arglist") != std::string::npos) {
+        $$->production += " <arglist> ";
+    }
+
+    checkIntArgList($3);
+
+    $$->production += " )";
+    $$->addChild($3);
+}
+| RETURN Expression {
+    $$ = new Node(currentST);
+    $$->production = "<statement> --> return <exp>";
+
+    std::string functype = getCurrentReturnType(currentST);
+    std::string rettype = getType($2, currentST);
+
+    if (rettype == "this") {
+        rettype = parseThis(currentST);
+    }
+
+    if(functype == "") {
+        yyerror("Constructor cannot have return statement");
+    }
+    else if(functype != rettype || rettype == "void") {
+        if (!(rettype == "null" && functype != "void" && functype != "int")) {
+            yyerror("Wrong return type");
+        }
+    }
+
+    $$->addChild($2);
+}
+;
+
+Name: THIS {
+    $$ = new Node(currentST);
+    $$->production = "<name> --> this";
+}
+| ID {
+    $$ = new Node(currentST);
+    $$->production = "<name> --> ID";
+    $1->production = "ID --> "+ $1->getsvalue();
+    $$->addChild($1);
+}
+| Name DOT ID {
+    $$ = new Node(currentST);
+    $$->production = "<name> --> <name> . ID";
+    $$->addChild($1);
+
+    $3->production = "ID --> "+ $3->getsvalue();
+    $$->addChild($3);
+}
+| THIS LBRACK Expression RBRACK BracketExps {
+    $$ = new Node(currentST);
+    $$->production = "<name> --> <name> [ <exp> ] ";
+    $$->addChild($3);
+    $$->addChild($5);
+}
+| ID LBRACK Expression RBRACK BracketExps {
+    $$ = new Node(currentST);
+    $$->production = "<name> --> <name> [ <exp> ] ";
+
+    $1->production = "ID --> "+ $1->getsvalue();
+    $$->addChild($1);
+    $$->addChild($3);
+    $$->addChild($5);
+ }
+| Name DOT ID LBRACK Expression RBRACK BracketExps {
+    $$ = new Node(currentST);
+    $$->production = "<name> --> <name> . ID";
+    $$->addChild($1);
+    $1->production = "ID --> "+ $3->getsvalue();
+    $$->addChild($3);
+    $$->addChild($5);
+    $$->addChild($7);
+}
+;
+
+BracketExps: LBRACK Expression RBRACK BracketExps {
+    $$ = new Node(currentST);
+    $$->production = "<bracketexp> --> [ <exp> ]";
+    if($4->production.find("bracketexp") != std::string::npos) {
+        $$->production += " <bracketexp>";    
+    }
+    $$->addChild($2);
+    $$->addChild($4);
+}
+| %empty { $$ = new Node(currentST);  };
+
+ArgList: Expression NArg {
+    $$ = new Node(currentST);
+    $$->production = "<arglist> --> <exp>";
+    if($2->production.find("arg") != std::string::npos) {
+        $$->production += " <arg>";    
+    }
+    $$->addChild($1);
+    $$->addChild($2);
+}
+| %empty { $$ = new Node(currentST); } ; 
+
+NArg: NArg COMMA Expression {
+    $$ = new Node(currentST);
+    $$->production = "<arg> --> <exp> <arg>";
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| %empty { $$ = new Node(currentST); };
+
+Expression: Name {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <name>";
+    $$->addChild($1);
+}
+| NUMBER {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> NUMBER";
+    $1->production = "NUMBER --> " + std::to_string($1->getivalue());
+    $$->addChild($1);
+}
+| NULLT {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> null";
+}
+| Name LPAREN ArgList RPAREN {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <name> ( ";
+    if($3->production.find("arglist") != std::string::npos) {
+        $$->production += " <arglist> ";
+    }
+    $$->production += " )";
+
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| READ LPAREN RPAREN {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> read ()";
+}
+| NewExpression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <newexp>";
+    $$->addChild($1);
+}
+| LPAREN Expression RPAREN {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> ( <exp> )";
+    $$->addChild($2);
+}
+| PLUS Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> + <exp>";
+    $$->addChild($2);
+}
+| MINUS Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> - <exp>";
+    $$->addChild($2);
+}
+| NOT Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> ! <exp>";
+    $$->addChild($2);
+}
+| Expression EQ Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> == <exp>";
+    checkSameOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression NE Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> != <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression LE Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> <= <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression GE Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> >= <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression LT Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> < <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression GT Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> > <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression PLUS Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> + <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression MINUS Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> - <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression OR Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> || <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression TIMES Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> * <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression DIV Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> / <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression MOD Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> % <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| Expression AND Expression {
+    $$ = new Node(currentST);
+    $$->production = "<exp> --> <exp> && <exp>";
+    checkIntOperands($1, $3);
+    $$->addChild($1);
+    $$->addChild($3);
+}
+;
+
+
+NewExpression: NEW ID LPAREN ArgList RPAREN {
+    $$ = new Node(currentST);
+    $$->production = "<newexp> --> new ID ( ";
+    if($4->production.find("arglist") != std::string::npos) {
+        $$->production += " <arglist> ";
+    }
+
+    $$->production += " )";
+    $2->production = "ID --> "+ $2->getsvalue();
+    $$->addChild($2);
+    $$->addChild($4);
+}
+| NEW SimpleType NewExpressions NewBracks {
+    $$ = new Node(currentST);
+    $$->production = "<newexp> --> new <simpletype>";
+    $$->addChild($2);
+    $$->addChild($3);
+    $$->addChild($4);
+    if($3->production.find("newexp") != std::string::npos) {
+        $$->production += " <newexps> ";
+    }
+    if($4->production.find("newbrack") != std::string::npos) {
+        $$->production += " <newbracks>";
+    }
+}
+;
+
+NewExpressions: NewExpressions LBRACK Expression RBRACK {
+    $$ = new Node(currentST);
+    $$->production = "<newexps> --> <newexps> [ <exp> ]";
+    $$->addChild($1);
+    $$->addChild($3);
+}
+| %empty { $$ = new Node(currentST); };
+
+NewBracks: LBRACK RBRACK NewBracks {
+    $$ = new Node(currentST);
+    $$->production = "<newbracks> --> [ ] ";
+    if($3->production.find("newbrack") != std::string::npos) {
+        $$->production += " <newbracks>";
+    }
+    $$->addChild($3);
+}
+| %empty { $$ = new Node(currentST); };
+
+%%
+
+
+void yyerror(const char *msg)
+{
+    int lineno = yylloc.first_line;
+
+    std::cerr << lineno << ": " << linetext << std::endl;
+
+    // show where on the line the error occured
+    int preflen = std::to_string(lineno).length() + 2; // +2 because of ": "]
+    int ind = 0;
+    for (int i = -preflen; i < yylloc.last_column - 1; i++) {
+        if (i >= yylloc.first_column - 1) {
+            std::cerr << "^";
+        } else {
+            if(ind < linetext.size() && linetext[ind] == '\t') {
+                // compute how will tab affect spacing of error msg
+                int inc = (8 - ((i) % 8));
+                i += inc;
+                std::cerr << "\t";
+            } else {
+                std::cerr << " ";
+            }
+        }
+        ind++;
+    }
+
+    std::cerr << std::endl << msg << std::endl;
+
+     // new line as delimitire between errors and output
+    std::cout << std::endl;
+}
+
