@@ -24,13 +24,11 @@ class Node {
 
     void addChild(Node* children);
     void addChildren(std::vector<Node> children);
-    void resetChildren();
-
     std::vector<Node> getChildren();
+    void resetChildren();
 
     void setsvalue(std::string value);
     std::string getsvalue();
-
     void setivalue(int value);
     int getivalue();
 

@@ -107,7 +107,7 @@ declare void @printf(ptr)
 
 Print symbol table:
 ```
-$ ./decaf -s < examples/example.decaf`
+$ ./decaf -s < examples/example.decaf
 Main: <class_type>
   a: int
   b: int

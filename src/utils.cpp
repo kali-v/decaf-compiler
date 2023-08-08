@@ -115,10 +115,8 @@ std::string getNewList(Node* newnode, std::string res) {
     for (Node child : newnode->children) {
         if (child.production.size() > 0) {
             std::string lprod = getLeftSideOfProd(child.production);
-            if (strContains(lprod, "newexps"))
-                res += "[]";
-            else if (strContains(lprod, "<newbracks>"))
-                res += "[]";
+            if (strContains(lprod, "newexps")) res += "[]";
+            else if (strContains(lprod, "<newbracks>")) res += "[]";
         }
         res = getNewList(&child, res);
     }
@@ -130,10 +128,8 @@ std::string getType(Node* node, SymbolTable* symbolTable) {
     std::string prod = getRightSideOfProd(node->production);
 
     if (strContains(prod, "<name>")) {
-        if (strContains(prod, "."))
-            return "int"; // TODO: get last
-        else
-            return getNameType(node->children[0], symbolTable);
+        if (strContains(prod, ".")) return "int"; // TODO: get last
+        else return getNameType(node->children[0], symbolTable);
     } else if (strContains(node->production, "ID")) {
         return getNameType(*node, symbolTable);
     } else if (endsWith(prod, "<exp>") || strContains(prod, "read") || strContains(node->production, "NUMBER") ||
@@ -227,8 +223,7 @@ std::string extractOperation(std::string prod) {
         if (c == ' ') {
             if (is_op) return op;
             is_op = true;
-        } else if (is_op)
-            op += c;
+        } else if (is_op) op += c;
     }
     return op;
 }

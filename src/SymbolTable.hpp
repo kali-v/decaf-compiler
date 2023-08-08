@@ -39,11 +39,11 @@ class SymbolTable {
 
     SymbolTable(SymbolTable* parent);
 
+    SymbolTable* addScope();
     SymbolTable* getSuperParent();
     STObject* lookup(std::string name);
     STObject* locLookup(std::string name);
     void insert(STObject* object);
-    SymbolTable* addScope();
 
     void print(int level);
 };

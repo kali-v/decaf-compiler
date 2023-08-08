@@ -105,10 +105,8 @@ llvm::Value* LLVMIRGenerator::genExp(Node& exp) {
         };
 
         auto it = opMap.find(extractOperation(getRightSideOfProd(exp.production)));
-        if (it != opMap.end())
-            return it->second(genExp(exp.children[0]), genExp(exp.children[1]));
-        else
-            throw NotImplemented("functionality for: " + exp.production + " not implemented yet");
+        if (it != opMap.end()) return it->second(genExp(exp.children[0]), genExp(exp.children[1]));
+        else throw NotImplemented("functionality for: " + exp.production + " not implemented yet");
     }
 
     return nullptr;
